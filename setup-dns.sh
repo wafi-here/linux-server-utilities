@@ -86,6 +86,32 @@ BACKUP_DIR="/root/bind9-backup-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP_DIR"
 [ -f /etc/bind/named.conf.local ] && cp -a /etc/bind/named.conf.local "$BACKUP_DIR/" 2>/dev/null || true
 
+# -------------------- 2.5. KONFIGURASI OPTIONS ------------------
+
+echo "[2.5/5] Mengatur global options di named.conf.options..."
+
+# Backup named.conf.options ke folder backup
+[ -f /etc/bind/named.conf.options ] && cp -a /etc/bind/named.conf.options "$BACKUP_DIR/" 2>/dev/null || true
+
+cat > /etc/bind/named.conf.options <<EOF
+options {
+    directory "/var/cache/bind";
+
+    forwarders {
+        8.8.8.8;
+        8.8.4.4;
+        $SERVER_IP_ONLY;
+    };
+
+    dnssec-validation auto;
+
+    listen-on { any; };
+    allow-query { any; };
+
+    recursion yes;
+};
+EOF
+
 # -------------------- 3. KONFIGURASI ZONE --------------------
 
 echo "[3/5] Mengatur deklarasi zone di named.conf.local..."
