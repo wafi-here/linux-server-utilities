@@ -67,6 +67,7 @@ fi
 
 DOMAIN_BASE="${DOMAIN_NAME%.}"
 REVERSE_ZONE_NAME="${ip3}.${ip2}.${ip1}.in-addr.arpa"
+FQDN="${DOMAIN_NAME}"
 
 FORWARD_FILE="/etc/bind/forward.${DOMAIN_BASE}"
 REVERSE_FILE="/etc/bind/reverse.${DOMAIN_BASE}"
@@ -75,6 +76,7 @@ echo "=================================================="
 echo " RINGKASAN KONFIGURASI:"
 echo "=================================================="
 echo "Domain       : $DOMAIN_NAME"
+echo "FQDN Host    : $FQDN"
 echo "Server IP    : $SERVER_IP"
 echo "Record Mode  : $DNS_RECORD_MODE"
 [ -n "$CUSTOM_HOSTS" ] && echo "Custom Hosts : $CUSTOM_HOSTS"
@@ -88,28 +90,62 @@ if [[ ! "$confirm" =~ ^[yY]$ ]]; then
     exit 0
 fi
 
+# -------------------- HOSTNAME & HOSTS SETUP --------------
+
+echo "[1/9] Mengatur hostname dan /etc/hosts..."
+
+hostnamectl set-hostname "$FQDN"
+
+if ! grep -q "$FQDN" /etc/hosts; then
+    cat >> /etc/hosts <<EOF
+
+127.0.0.1   $FQDN server
+$SERVER_IP  $FQDN server
+EOF
+fi
+
 # -------------------- INSTALASI BIND9 ---------------------
 
-echo "[1/7] Menginstal BIND9..."[cite: 2]
+echo "[2/9] Menginstal BIND9..."
 
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-apt-get install -y bind9 bind9utils bind9-doc
+apt-get install -y bind9 bind9-utils bind9-doc
 
 # -------------------- BACKUP KONFIGURASI ------------------
 
-echo "[2/7] Membuat backup konfigurasi..."[cite: 2]
+echo "[3/9] Membuat backup konfigurasi..."
 
 BACKUP_DIR="/root/bind9-backup-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP_DIR"
 
+cp -a /etc/bind/named.conf.options "$BACKUP_DIR/" 2>/dev/null || true
 cp -a /etc/bind/named.conf.local "$BACKUP_DIR/" 2>/dev/null || true
 cp -a /etc/resolv.conf "$BACKUP_DIR/resolv.conf.bak" 2>/dev/null || true
 
+# -------------------- KONFIGURASI OPTIONS -----------------
+
+echo "[4/9] Mengatur /etc/bind/named.conf.options..."
+
+cat > /etc/bind/named.conf.options <<EOF
+options {
+    directory "/var/cache/bind";
+
+    forwarders {
+        $SERVER_IP;
+    };
+
+    dnssec-validation auto;
+    listen-on { any; };
+    allow-query { any; };
+    allow-recursion { any; };
+};
+EOF
+
 # -------------------- KONFIGURASI ZONE --------------------
 
-echo "[3/7] Mengatur named.conf.local..."[cite: 2]
+echo "[5/9] Mengatur named.conf.local..."
 
 cat > /etc/bind/named.conf.local <<EOF
 // Forward DNS Zone
@@ -127,22 +163,21 @@ EOF
 
 # -------------------- FORWARD DNS --------------------------
 
-echo "[4/7] Membuat forward zone..."[cite: 2]
+echo "[6/9] Membuat forward zone..."
 
 if [ "$DNS_RECORD_MODE" = "custom" ]; then
-    # Mode Custom dengan dynamic host entries
     cat > "$FORWARD_FILE" <<EOF
 \$TTL    604800
-@       IN      SOA     ns.$DOMAIN_NAME. root.$DOMAIN_NAME. (
+@       IN      SOA     $FQDN. root.$FQDN. (
                               2         ; Serial
                          604800         ; Refresh
                           86400         ; Retry
                         2419200         ; Expire
                          604800 )       ; Negative Cache TTL
 
-@       IN      NS      ns.$DOMAIN_NAME.
+@       IN      NS      $FQDN.
 @       IN      A       $SERVER_IP
-ns      IN      A       $SERVER_IP
+server  IN      A       $SERVER_IP
 www     IN      A       $SERVER_IP
 EOF
 
@@ -150,17 +185,16 @@ EOF
         echo "$host    IN      A       $SERVER_IP" >> "$FORWARD_FILE"
     done
 else
-    # Mode Standard (lengkap sesuai panduan)
     cat > "$FORWARD_FILE" <<EOF
 \$TTL    604800
-@       IN      SOA     server.$DOMAIN_NAME. root.server.$DOMAIN_NAME. (
+@       IN      SOA     $FQDN. root.$FQDN. (
                               2         ; Serial
                          604800         ; Refresh
                           86400         ; Retry
                         2419200         ; Expire
                          604800 )       ; Negative Cache TTL
 
-@       IN      NS      server.$DOMAIN_NAME.
+@       IN      NS      $FQDN.
 @       IN      A       $SERVER_IP
 server  IN      A       $SERVER_IP
 host    IN      A       $SERVER_IP
@@ -179,20 +213,22 @@ fi
 
 # -------------------- REVERSE DNS -------------------------
 
-echo "[5/7] Membuat reverse zone..."[cite: 2]
+echo "[7/9] Membuat reverse zone..."
 
 if [ "$DNS_RECORD_MODE" = "custom" ]; then
     cat > "$REVERSE_FILE" <<EOF
 \$TTL    604800
-@       IN      SOA     ns.$DOMAIN_NAME. root.$DOMAIN_NAME. (
+@       IN      SOA     $FQDN. root.$FQDN. (
                               2         ; Serial
                          604800         ; Refresh
                           86400         ; Retry
                         2419200         ; Expire
                          604800 )       ; Negative Cache TTL
 
-@       IN      NS      ns.$DOMAIN_NAME.
-$ip4    IN      PTR     ns.$DOMAIN_NAME.
+@       IN      NS      $FQDN.
+@       IN      PTR     $DOMAIN_NAME.
+server  IN      A       $SERVER_IP
+$ip4    IN      PTR     $FQDN.
 EOF
     for host in $CUSTOM_HOSTS; do
         echo "$ip4    IN      PTR     $host.$DOMAIN_NAME." >> "$REVERSE_FILE"
@@ -200,20 +236,20 @@ EOF
 else
     cat > "$REVERSE_FILE" <<EOF
 \$TTL    604800
-@       IN      SOA     server.$DOMAIN_NAME. root.server.$DOMAIN_NAME. (
+@       IN      SOA     $FQDN. root.$FQDN. (
                               2         ; Serial
                          604800         ; Refresh
                           86400         ; Retry
                         2419200         ; Expire
                          604800 )       ; Negative Cache TTL
 
-@       IN      NS      server.$DOMAIN_NAME.
+@       IN      NS      $FQDN.
 @       IN      PTR     $DOMAIN_NAME.
 server  IN      A       $SERVER_IP
 host    IN      A       $SERVER_IP
 client  IN      A       $SERVER_IP
 www     IN      A       $SERVER_IP
-$ip4    IN      PTR     server.$DOMAIN_NAME.
+$ip4    IN      PTR     $FQDN.
 
 @       IN      NS      ns1.$DOMAIN_NAME.
 ns1     IN      A       $SERVER_IP
@@ -227,7 +263,7 @@ fi
 
 # -------------------- PERMISSIONS & FIREWALL --------------
 
-echo "Mengatur izin file dan firewall..."[cite: 2]
+echo "Mengatur izin file dan firewall..."
 
 chown -R bind:bind /etc/bind
 chmod -R 755 /etc/bind
@@ -241,18 +277,20 @@ fi
 
 # -------------------- RESOLV.CONF CONFIGURATION -----------
 
-echo "[6/7] Mengonfigurasi /etc/resolv.conf..."[cite: 2]
+echo "[8/9] Mengonfigurasi /etc/resolv.conf..."
 
 cat > /etc/resolv.conf <<EOF
+nameserver 127.0.0.53
+options edns0 trust-ad
 nameserver $SERVER_IP
 search $DOMAIN_NAME
 EOF
 
 # -------------------- VALIDASI & SERVICE ------------------
 
-echo "[7/7] Memeriksa konfigurasi dan memulai named..."[cite: 2]
+echo "[9/9] Memeriksa konfigurasi dan memulai named..."
 
-named-checkconf -z /etc/bind/named.conf.local
+named-checkconf
 named-checkzone "$DOMAIN_NAME" "$FORWARD_FILE"
 named-checkzone "$REVERSE_ZONE_NAME" "$REVERSE_FILE"
 
@@ -267,18 +305,19 @@ echo "=================================================="
 systemctl --no-pager --full status named
 
 echo
-echo "Pengujian DNS (ping / nslookup / dig):"[cite: 2]
-if [ "$DNS_RECORD_MODE" = "custom" ]; then
-    TEST_HOST="ns.$DOMAIN_NAME"
-else
-    TEST_HOST="server.$DOMAIN_NAME"
-fi
+echo "Pengujian DNS (dig / nslookup):"
+TEST_HOST="$FQDN"
+
+echo "--- Testing Dig ---"
+dig @127.0.0.1 "$DOMAIN_NAME" +short
+dig @127.0.0.1 "$TEST_HOST" +short
 
 echo "--- Testing Nslookup ---"
 nslookup "$DOMAIN_NAME" || true
 nslookup "$TEST_HOST" || true
 
 echo
+echo "Hostname      : $(hostname)"
 echo "DNS Server IP : $SERVER_IP"
 echo "Domain        : $DOMAIN_NAME"
 echo "Record Mode   : $DNS_RECORD_MODE"
