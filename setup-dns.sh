@@ -2,7 +2,7 @@
 
 # ==========================================================
 # INTERACTIVE DNS SERVER SETUP - BIND9 (NAMED)
-# OS       : Ubuntu Server
+# OS       : Ubuntu Server (with systemd-resolved integration)
 # Service  : named
 # ==========================================================
 
@@ -92,16 +92,15 @@ fi
 
 # -------------------- HOSTNAME & HOSTS SETUP --------------
 
-echo "[1/9] Mengatur hostname dan membersihkan /etc/hosts..."
+echo "[1/9] Mengatur hostname dan membersihkan duplikasi di /etc/hosts..."
 
 hostnamectl set-hostname "$FQDN"
 
-# Hapus entri lama untuk domain ini agar tidak terjadi duplikasi/konflik
+# Hapus entri lama yang mengandung domain ini atau alias 'server' khusus domain ini
 sed -i "/[[:space:]]${DOMAIN_NAME}/d" /etc/hosts
 
-# Tambahkan entri bersih yang baru ke /etc/hosts
+# Tambahkan entri bersih yang menunjuk HANYA ke SERVER_IP untuk menghindari perangkap loopback 127.0.0.1
 cat >> /etc/hosts <<EOF
-127.0.0.1   $DOMAIN_NAME server
 $SERVER_IP  $DOMAIN_NAME server
 EOF
 
@@ -123,7 +122,6 @@ mkdir -p "$BACKUP_DIR"
 
 cp -a /etc/bind/named.conf.options "$BACKUP_DIR/" 2>/dev/null || true
 cp -a /etc/bind/named.conf.local "$BACKUP_DIR/" 2>/dev/null || true
-cp -a /etc/resolv.conf "$BACKUP_DIR/resolv.conf.bak" 2>/dev/null || true
 
 # -------------------- KONFIGURASI OPTIONS -----------------
 
@@ -276,16 +274,21 @@ if command -v ufw &> /dev/null; then
     ufw allow 53/udp
 fi
 
-# -------------------- RESOLV.CONF CONFIGURATION -----------
+# -------------------- SYSTEMD-RESOLVED CONFIG (OPTION A) --
 
-echo "[8/9] Mengonfigurasi /etc/resolv.conf..."
+echo "[8/9] Mengonfigurasi systemd-resolved untuk routing domain..."
 
-cat > /etc/resolv.conf <<EOF
-nameserver 127.0.0.53
-options edns0 trust-ad
-nameserver $SERVER_IP
-search $DOMAIN_NAME
-EOF
+# Mendapatkan interface jaringan utama yang aktif secara otomatis
+DEFAULT_INTERFACE=$(ip route show default | awk '/default/ {print $5}' | head -n1)
+
+if [ -n "$DEFAULT_INTERFACE" ]; then
+    echo "Menggunakan interface jaringan: $DEFAULT_INTERFACE"
+    resolvectl dns "$DEFAULT_INTERFACE" "$SERVER_IP"
+    resolvectl domain "$DEFAULT_INTERFACE" "~$DOMAIN_NAME"
+else
+    echo "Peringatan: Interface jaringan default tidak ditemukan, menggunakan konfigurasi global."
+    systemctl restart systemd-resolved
+fi
 
 # -------------------- VALIDASI & SERVICE ------------------
 
