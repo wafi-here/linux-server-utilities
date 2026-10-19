@@ -92,17 +92,18 @@ fi
 
 # -------------------- HOSTNAME & HOSTS SETUP --------------
 
-echo "[1/9] Mengatur hostname dan /etc/hosts..."
+echo "[1/9] Mengatur hostname dan membersihkan /etc/hosts..."
 
 hostnamectl set-hostname "$FQDN"
 
-if ! grep -q "$FQDN" /etc/hosts; then
-    cat >> /etc/hosts <<EOF
+# Hapus entri lama untuk domain ini agar tidak terjadi duplikasi/konflik
+sed -i "/[[:space:]]${DOMAIN_NAME}/d" /etc/hosts
 
-127.0.0.1   $FQDN server
-$SERVER_IP  $FQDN server
+# Tambahkan entri bersih yang baru ke /etc/hosts
+cat >> /etc/hosts <<EOF
+127.0.0.1   $DOMAIN_NAME server
+$SERVER_IP  $DOMAIN_NAME server
 EOF
-fi
 
 # -------------------- INSTALASI BIND9 ---------------------
 
@@ -249,15 +250,15 @@ server  IN      A       $SERVER_IP
 host    IN      A       $SERVER_IP
 client  IN      A       $SERVER_IP
 www     IN      A       $SERVER_IP
-$ip4    IN      PTR     $FQDN.
+$ip4       IN      PTR     $FQDN.
 
 @       IN      NS      ns1.$DOMAIN_NAME.
 ns1     IN      A       $SERVER_IP
-$ip4    IN      PTR     ns1.$DOMAIN_NAME.
+$ip4       IN      PTR     ns1.$DOMAIN_NAME.
 
 @       IN      MX      10 admin.$DOMAIN_NAME.
 admin   IN      A       $SERVER_IP
-$ip4    IN      PTR     admin.$DOMAIN_NAME.
+$ip4       IN      PTR     admin.$DOMAIN_NAME.
 EOF
 fi
 
