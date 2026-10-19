@@ -76,19 +76,39 @@ else
     echo 'INTERFACESv4="'$INTERFACESV4'"' >> /etc/default/isc-dhcp-server
 fi
 
-# 7. Tantangan C: Konfigurasi Subnet DHCP (Append Blok Subnet ke /etc/dhcp/dhcpd.conf)[cite: 1]
-echo "[-] Menambahkan blok konfigurasi subnet ke dhcpd.conf..."
-cat <<EOF >> /etc/dhcp/dhcpd.conf
+# 7. Tantangan C: Konfigurasi Subnet DHCP (Mencegah Duplikasi dengan Marker)
+echo "[-] Mengonfigurasi subnet DHCP secara bersih pada dhcpd.conf..."
 
-# Konfigurasi Subnet Otomatis oleh Skrip Setup
+MARKER_BEGIN="# === BEGIN MANAGED DHCP BLOCK ==="
+MARKER_END="# === END MANAGED DHCP BLOCK ==="
+
+NEW_DHCP_BLOCK="$MARKER_BEGIN
 subnet $SUBNET netmask $NETMASK {
   range $RANGE_START $RANGE_END;
   option routers $ROUTER;
   option domain-name-servers $DNS;
 }
-EOF
+$MARKER_END"
 
-# 8. Tantangan D: Konfigurasi Akses NTP Chrony (Partial Overwrite / Append pada /etc/chrony/chrony.conf)[cite: 1]
+if grep -q "$MARKER_BEGIN" /etc/dhcp/dhcpd.conf; then
+    # Jika marker sudah ada, hapus blok lama beserta isinya di antara marker, lalu masukkan yang baru
+    python3 -c '
+import sys
+with open("/etc/dhcp/dhcpd.conf", "r") as f:
+    content = f.read()
+import re
+pattern = r"# === BEGIN MANAGED DHCP BLOCK ===.*?# === END MANAGED DHCP BLOCK ==="
+new_content = re.sub(pattern, "", content, flags=re.DOTALL)
+with open("/etc/dhcp/dhcpd.conf", "w") as f:
+    f.write(new_content.strip() + "\n")
+'
+fi
+
+# Tambahkan blok baru di akhir baris berkas
+echo -e "\n$NEW_DHCP_BLOCK" >> /etc/dhcp/dhcpd.conf
+
+
+# 8. Tantangan D: Konfigurasi Akses NTP Chrony (Overwrite Bersih)
 echo "[-] Mengonfigurasi akses izin NTP pada chrony.conf..."
 if grep -q "^allow " /etc/chrony/chrony.conf; then
     sed -i 's#^allow .*#allow '"$NTP_ALLOW"'#' /etc/chrony/chrony.conf
