@@ -1,191 +1,286 @@
 #!/bin/bash
 
 # ==========================================================
-# DYNAMIC BIND9 DNS SERVER SETUP SCRIPT (DNS ONLY)
-# OS       : Ubuntu Server 22.04 LTS
-# Service  : BIND9 (named)
+# INTERACTIVE DNS SERVER SETUP - BIND9 (NAMED)
+# OS       : Ubuntu Server
+# Service  : named
 # ==========================================================
 
 set -Eeuo pipefail
 
-# Check root privilege
 if [ "$(id -u)" -ne 0 ]; then
     echo "Error: Jalankan script menggunakan sudo."
-    echo "Contoh: sudo bash ./setup-dns.sh"
+    echo "Contoh: sudo ./setup-dns.sh"
     exit 1
 fi
 
 echo "=================================================="
-echo " DYNAMIC BIND9 DNS SERVER SETUP (DNS ONLY)"
+echo " INTERACTIVE DNS SERVER SETUP (NAMED)"
 echo "=================================================="
-echo "Tekan Enter untuk menggunakan nilai default."
-echo ""
 
-# Deteksi IP aktif pada sistem secara otomatis sebagai saran default
-AUTO_DETECT_IP=$(hostname -I | awk '{print $1}')
-AUTO_DETECT_IP="${AUTO_DETECT_IP:-192.168.56.10}"
+# -------------------- USER INPUTS -------------------------
 
-# -------------------- INPUT DINAMIS -----------------------
+read -p "Masukkan Domain Name [default: pas-paas.local]: " input_domain
+DOMAIN_NAME="${input_domain:-pas-paas.local}"
 
-read -p "Masukkan Domain Name [pas-paas.local]: " DOMAIN_NAME
-DOMAIN_NAME="${DOMAIN_NAME:-pas-paas.local}"
+read -p "Masukkan Server IP [default: 192.168.56.102]: " input_ip
+SERVER_IP="${input_ip:-192.168.56.102}"
 
-# Jika user mengosongkan nama domain, batalkan proses
-if [ -z "$DOMAIN_NAME" ]; then
-    echo "Error: Domain Name tidak boleh kosong."
-    exit 1
+echo
+echo "Pilih Mode Record DNS:"
+echo "  1) standard (Record lengkap standar: server, host, client, www, ns1, admin)"
+echo "  2) custom   (Masukkan hostname/subdomain tambahan secara dinamis)"
+read -p "Pilihan Mode [1/2, default: 1]: " input_mode
+
+DNS_RECORD_MODE="standard"
+CUSTOM_HOSTS=""
+if [ "$input_mode" = "2" ]; then
+    DNS_RECORD_MODE="custom"
+    read -p "Masukkan daftar hostname tambahan (pisahkan dengan spasi, cth: admin api app): " CUSTOM_HOSTS
 fi
 
-read -p "Masukkan Server IP dengan CIDR (contoh: 192.168.56.10/24) [$AUTO_DETECT_IP/24]: " SERVER_CIDR
-SERVER_CIDR="${SERVER_CIDR:-$AUTO_DETECT_IP/24}"
+# -------------------- VALIDASI INPUT ----------------------
 
-# Ekstrak IP tanpa CIDR
-SERVER_IP_ONLY="${SERVER_CIDR%/*}"
-
-# Validasi Format IP
-if ! [[ "$SERVER_IP_ONLY" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+if ! [[ "$SERVER_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
     echo "Error: Format IP address tidak valid."
     exit 1
 fi
 
-IFS='.' read -r ip1 ip2 ip3 ip4 <<< "$SERVER_IP_ONLY"
+IFS='.' read -r ip1 ip2 ip3 ip4 <<< "$SERVER_IP"
+
+for octet in "$ip1" "$ip2" "$ip3" "$ip4"; do
+    if (( 10#$octet > 255 )); then
+        echo "Error: IP address tidak valid."
+        exit 1
+    fi
+done
+
+if (( 10#$ip4 == 0 || 10#$ip4 == 255 )); then
+    echo "Error: Gunakan IP host yang valid."
+    exit 1
+fi
+
+if ! [[ "$DOMAIN_NAME" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+    echo "Error: Format domain tidak valid."
+    exit 1
+fi
 
 DOMAIN_BASE="${DOMAIN_NAME%.}"
 REVERSE_ZONE_NAME="${ip3}.${ip2}.${ip1}.in-addr.arpa"
-FORWARD_FILE="/etc/bind/db.${DOMAIN_BASE}"
-REVERSE_FILE="/etc/bind/db.${ip3}"
 
-echo ""
+FORWARD_FILE="/etc/bind/forward.${DOMAIN_BASE}"
+REVERSE_FILE="/etc/bind/reverse.${DOMAIN_BASE}"
+
 echo "=================================================="
-echo " RINGKASAN KONFIGURASI"
+echo " RINGKASAN KONFIGURASI:"
 echo "=================================================="
-echo "Domain Name  : $DOMAIN_NAME"
-echo "Server IP    : $SERVER_IP_ONLY"
+echo "Domain       : $DOMAIN_NAME"
+echo "Server IP    : $SERVER_IP"
+echo "Record Mode  : $DNS_RECORD_MODE"
+[ -n "$CUSTOM_HOSTS" ] && echo "Custom Hosts : $CUSTOM_HOSTS"
 echo "Forward DB   : $FORWARD_FILE"
-echo "Reverse Zone : $REVERSE_ZONE_NAME"
+echo "Reverse zone : $REVERSE_ZONE_NAME"
 echo "Reverse DB   : $REVERSE_FILE"
 echo "=================================================="
-echo ""
-
-# -------------------- 1. INSTALASI BIND9 ---------------------
-
-echo "[1/5] Memeriksa dan Menginstal BIND9..."
-export DEBIAN_FRONTEND=noninteractive
-
-if ! dpkg -l | grep -q bind9; then
-    apt-get update
-    apt-get install -y bind9 bind9-utils bind9-doc
-else
-    echo "Paket BIND9 sudah terinstal sebelumnya."
+read -p "Lanjutkan instalasi dan konfigurasi? (y/N): " confirm
+if [[ ! "$confirm" =~ ^[yY]$ ]]; then
+    echo "Instalasi dibatalkan oleh pengguna."
+    exit 0
 fi
 
-# -------------------- 2. BACKUP KONFIGURASI ------------------
+# -------------------- INSTALASI BIND9 ---------------------
 
-echo "[2/5] Membuat backup konfigurasi lama..."
+echo "[1/7] Menginstal BIND9..."[cite: 2]
+
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update
+apt-get install -y bind9 bind9utils bind9-doc
+
+# -------------------- BACKUP KONFIGURASI ------------------
+
+echo "[2/7] Membuat backup konfigurasi..."[cite: 2]
+
 BACKUP_DIR="/root/bind9-backup-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP_DIR"
-[ -f /etc/bind/named.conf.local ] && cp -a /etc/bind/named.conf.local "$BACKUP_DIR/" 2>/dev/null || true
 
-# -------------------- 2.5. KONFIGURASI OPTIONS ------------------
+cp -a /etc/bind/named.conf.local "$BACKUP_DIR/" 2>/dev/null || true
+cp -a /etc/resolv.conf "$BACKUP_DIR/resolv.conf.bak" 2>/dev/null || true
 
-echo "[2.5/5] Mengatur global options di named.conf.options..."
+# -------------------- KONFIGURASI ZONE --------------------
 
-# Backup named.conf.options ke folder backup
-[ -f /etc/bind/named.conf.options ] && cp -a /etc/bind/named.conf.options "$BACKUP_DIR/" 2>/dev/null || true
-
-cat > /etc/bind/named.conf.options <<EOF
-options {
-    directory "/var/cache/bind";
-
-    forwarders {
-        8.8.8.8;
-        8.8.4.4;
-        $SERVER_IP_ONLY;
-    };
-
-    dnssec-validation auto;
-
-    listen-on { any; };
-    allow-query { any; };
-
-    recursion yes;
-};
-EOF
-
-# -------------------- 3. KONFIGURASI ZONE --------------------
-
-echo "[3/5] Mengatur deklarasi zone di named.conf.local..."
+echo "[3/7] Mengatur named.conf.local..."[cite: 2]
 
 cat > /etc/bind/named.conf.local <<EOF
-// Forward DNS Zone untuk $DOMAIN_NAME
-zone "$DOMAIN_NAME" {
+// Forward DNS Zone
+zone "$DOMAIN_NAME" IN {
     type master;
     file "$FORWARD_FILE";
 };
 
-// Reverse DNS Zone untuk $REVERSE_ZONE_NAME
-zone "$REVERSE_ZONE_NAME" {
+// Reverse DNS Zone
+zone "$REVERSE_ZONE_NAME" IN {
     type master;
     file "$REVERSE_FILE";
 };
 EOF
 
-# -------------------- 4. FORWARD & REVERSE DNS --------------------------
+# -------------------- FORWARD DNS --------------------------
 
-echo "[4/5] Membuat atau memperbarui file Database Zone..."
+echo "[4/7] Membuat forward zone..."[cite: 2]
 
-# Buat Forward Zone secara manual jika belum ada atau overwrite konfigurasi target
-cat > "$FORWARD_FILE" <<EOF
+if [ "$DNS_RECORD_MODE" = "custom" ]; then
+    # Mode Custom dengan dynamic host entries
+    cat > "$FORWARD_FILE" <<EOF
 \$TTL    604800
-@   IN  SOA ns.$DOMAIN_NAME. root.$DOMAIN_NAME. (
-            2026101301 ; Serial
-            604800     ; Refresh
-            86400      ; Retry
-            2419200    ; Expire
-            604800 )   ; Negative Cache TTL
+@       IN      SOA     ns.$DOMAIN_NAME. root.$DOMAIN_NAME. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
 
-@   IN  NS  ns.$DOMAIN_NAME.
-@   IN  A   $SERVER_IP_ONLY
-ns  IN  A   $SERVER_IP_ONLY
-www IN  A   $SERVER_IP_ONLY
+@       IN      NS      ns.$DOMAIN_NAME.
+@       IN      A       $SERVER_IP
+ns      IN      A       $SERVER_IP
+www     IN      A       $SERVER_IP
 EOF
 
-# Buat Reverse Zone secara manual jika belum ada atau overwrite konfigurasi target
-cat > "$REVERSE_FILE" <<EOF
+    for host in $CUSTOM_HOSTS; do
+        echo "$host    IN      A       $SERVER_IP" >> "$FORWARD_FILE"
+    done
+else
+    # Mode Standard (lengkap sesuai panduan)
+    cat > "$FORWARD_FILE" <<EOF
 \$TTL    604800
-@   IN  SOA ns.$DOMAIN_NAME. root.$DOMAIN_NAME. (
-            1          ; Serial
-            604800     ; Refresh
-            86400      ; Retry
-            2419200    ; Expire
-            604800 )   ; Negative Cache TTL
+@       IN      SOA     server.$DOMAIN_NAME. root.server.$DOMAIN_NAME. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
 
-@   IN  NS  ns.$DOMAIN_NAME.
-$ip4 IN PTR ns.$DOMAIN_NAME.
+@       IN      NS      server.$DOMAIN_NAME.
+@       IN      A       $SERVER_IP
+server  IN      A       $SERVER_IP
+host    IN      A       $SERVER_IP
+client  IN      A       $SERVER_IP
+www     IN      A       $SERVER_IP
+
+@       IN      NS      ns1.$DOMAIN_NAME.
+@       IN      A       $SERVER_IP
+ns1     IN      A       $SERVER_IP
+
+@       IN      MX      10 admin.$DOMAIN_NAME.
+@       IN      A       $SERVER_IP
+admin   IN      A       $SERVER_IP
+EOF
+fi
+
+# -------------------- REVERSE DNS -------------------------
+
+echo "[5/7] Membuat reverse zone..."[cite: 2]
+
+if [ "$DNS_RECORD_MODE" = "custom" ]; then
+    cat > "$REVERSE_FILE" <<EOF
+\$TTL    604800
+@       IN      SOA     ns.$DOMAIN_NAME. root.$DOMAIN_NAME. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+
+@       IN      NS      ns.$DOMAIN_NAME.
+$ip4    IN      PTR     ns.$DOMAIN_NAME.
+EOF
+    for host in $CUSTOM_HOSTS; do
+        echo "$ip4    IN      PTR     $host.$DOMAIN_NAME." >> "$REVERSE_FILE"
+    done
+else
+    cat > "$REVERSE_FILE" <<EOF
+\$TTL    604800
+@       IN      SOA     server.$DOMAIN_NAME. root.server.$DOMAIN_NAME. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+
+@       IN      NS      server.$DOMAIN_NAME.
+@       IN      PTR     $DOMAIN_NAME.
+server  IN      A       $SERVER_IP
+host    IN      A       $SERVER_IP
+client  IN      A       $SERVER_IP
+www     IN      A       $SERVER_IP
+$ip4    IN      PTR     server.$DOMAIN_NAME.
+
+@       IN      NS      ns1.$DOMAIN_NAME.
+ns1     IN      A       $SERVER_IP
+$ip4    IN      PTR     ns1.$DOMAIN_NAME.
+
+@       IN      MX      10 admin.$DOMAIN_NAME.
+admin   IN      A       $SERVER_IP
+$ip4    IN      PTR     admin.$DOMAIN_NAME.
+EOF
+fi
+
+# -------------------- PERMISSIONS & FIREWALL --------------
+
+echo "Mengatur izin file dan firewall..."[cite: 2]
+
+chown -R bind:bind /etc/bind
+chmod -R 755 /etc/bind
+
+if command -v ufw &> /dev/null; then
+    ufw allow bind9
+    ufw allow 53
+    ufw allow 53/tcp
+    ufw allow 53/udp
+fi
+
+# -------------------- RESOLV.CONF CONFIGURATION -----------
+
+echo "[6/7] Mengonfigurasi /etc/resolv.conf..."[cite: 2]
+
+cat > /etc/resolv.conf <<EOF
+nameserver $SERVER_IP
+search $DOMAIN_NAME
 EOF
 
-# -------------------- 5. VALIDASI & AKTIFKAN SERVICE ---------------------
+# -------------------- VALIDASI & SERVICE ------------------
 
-echo "[5/5] Memeriksa konfigurasi DNS dan mengaktifkan service..."
+echo "[7/7] Memeriksa konfigurasi dan memulai named..."[cite: 2]
 
-named-checkconf
+named-checkconf -z /etc/bind/named.conf.local
 named-checkzone "$DOMAIN_NAME" "$FORWARD_FILE"
 named-checkzone "$REVERSE_ZONE_NAME" "$REVERSE_FILE"
 
-systemctl enable --now bind9
-systemctl restart bind9
+systemctl enable --now named
+systemctl restart named
 
-echo ""
+echo
 echo "=================================================="
-echo " BIND9 DNS SERVER BERHASIL DIKONFIGURASI"
+echo " DNS SERVER BERHASIL DIKONFIGURASI"
 echo "=================================================="
 
-systemctl --no-pager --full status bind9
+systemctl --no-pager --full status named
 
-echo ""
-echo "Pengujian DNS lokal:"
-dig @127.0.0.1 "$DOMAIN_NAME" +short
-dig @127.0.0.1 "ns.$DOMAIN_NAME" +short
-dig @127.0.0.1 -x "$SERVER_IP_ONLY" +short
+echo
+echo "Pengujian DNS (ping / nslookup / dig):"[cite: 2]
+if [ "$DNS_RECORD_MODE" = "custom" ]; then
+    TEST_HOST="ns.$DOMAIN_NAME"
+else
+    TEST_HOST="server.$DOMAIN_NAME"
+fi
 
+echo "--- Testing Nslookup ---"
+nslookup "$DOMAIN_NAME" || true
+nslookup "$TEST_HOST" || true
+
+echo
+echo "DNS Server IP : $SERVER_IP"
+echo "Domain        : $DOMAIN_NAME"
+echo "Record Mode   : $DNS_RECORD_MODE"
+[ -n "$CUSTOM_HOSTS" ] && echo "Custom Hosts : $CUSTOM_HOSTS"
 echo "=================================================="
