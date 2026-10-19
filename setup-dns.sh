@@ -228,10 +228,10 @@ if [ "$DNS_RECORD_MODE" = "custom" ]; then
 @       IN      NS      $FQDN.
 @       IN      PTR     $DOMAIN_NAME.
 server  IN      A       $SERVER_IP
-$ip4    IN      PTR     $FQDN.
+$ip4       IN      PTR     $FQDN.
 EOF
     for host in $CUSTOM_HOSTS; do
-        echo "$ip4    IN      PTR     $host.$DOMAIN_NAME." >> "$REVERSE_FILE"
+        echo "$ip4       IN      PTR     $host.$DOMAIN_NAME." >> "$REVERSE_FILE"
     done
 else
     cat > "$REVERSE_FILE" <<EOF
