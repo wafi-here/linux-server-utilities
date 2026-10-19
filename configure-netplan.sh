@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ==========================================================
-# ADVANCED TARGETED NETPLAN CONFIGURATOR SCRIPT
+# ADVANCED TARGETED NETPLAN CONFIGURATOR SCRIPT (OPTIMIZED)
 # OS       : Ubuntu Server
 # Features : Interface Detection, Dynamic Parameters,
-#            Targeted Interface Overwrite, Conditional Omission
+#            Targeted Interface Overwrite, Pristine YAML Formatting
 # ==========================================================
 
 set -Eeuo pipefail
@@ -41,14 +41,14 @@ DHCP4="${DHCP4:-false}"
 ADDRESSES=""
 GATEWAY=""
 if [ "$DHCP4" = "false" ]; then
-    read -p "Masukkan IP Address & CIDR (pisahkan dengan koma jika banyak, misal: 10.10.10.2/27) []: " ADDRESSES
+    read -p "Masukkan IP Address & CIDR (pisahkan dengan koma, misal: 10.10.10.2/27) []: " ADDRESSES
     read -p "Masukkan Gateway IP (kosongkan jika tidak ada) []: " GATEWAY
 fi
 
 read -p "Masukkan Nameserver IP (pisahkan dengan koma, misal: 8.8.8.8, 1.1.1.1) []: " NS_ADDRESSES
 read -p "Masukkan Search Domains (pisahkan dengan koma, misal: localdomain) []: " NS_SEARCH
 
-# 3. Ensure python3 and python3-yaml are installed for precise, safe YAML editing
+# 3. Ensure python3 and python3-yaml are installed
 if ! python3 -c "import yaml" 2>/dev/null; then
     echo "[+] Menginstal dependensi python3-yaml untuk manipulasi YAML yang aman..."
     export DEBIAN_FRONTEND=noninteractive
@@ -73,7 +73,7 @@ fi
 
 echo "[+] Menggunakan berkas Netplan target: $NETPLAN_FILE"
 
-# 5. Targeted Configuration Update via Embedded Python (Ensures unmentioned interfaces/keys remain untouched & blank fields are omitted)
+# 5. Targeted Configuration Update via Embedded Python with Custom IndentedDumper
 python3 - "$NETPLAN_FILE" "$INTERFACE" "$DHCP4" "$ADDRESSES" "$GATEWAY" "$NS_ADDRESSES" "$NS_SEARCH" << 'EOF'
 import sys
 import yaml
@@ -86,6 +86,11 @@ gateway = sys.argv[5]
 ns_addresses = sys.argv[6]
 ns_search = sys.argv[7]
 
+# Custom Dumper to force proper indentation for YAML lists/sequences (matching Netplan standard)
+class IndentedDumper(yaml.SafeDumper):
+    def increase_indent(self, flow=False, indentless=False):
+        return super(IndentedDumper, self).increase_indent(flow, indentless=False)
+
 # Load existing configuration safely
 try:
     with open(yaml_file, 'r') as f:
@@ -96,6 +101,8 @@ except FileNotFoundError:
 # Ensure root netplan structure exists
 if 'network' not in data:
     data['network'] = {'version': 2, 'renderer': 'networkd', 'ethernets': {}}
+if 'renderer' not in data['network']:
+    data['network']['renderer'] = 'networkd'
 if 'ethernets' not in data['network']:
     data['network']['ethernets'] = {}
 
@@ -113,7 +120,7 @@ if not dhcp4:
     else:
         iface_conf.pop('addresses', None)
     
-    # Conditional Gateway / Route omission
+    # Conditional Gateway / Route omission (Modern Netplan standard uses routes)
     if gateway:
         iface_conf['routes'] = [{'to': 'default', 'via': gateway}]
     else:
@@ -145,17 +152,21 @@ else:
         if not iface_conf['nameservers']:
             iface_conf.pop('nameservers', None)
 
-# Write back updated YAML cleanly
+# Write back updated YAML cleanly using IndentedDumper
 with open(yaml_file, 'w') as f:
-    yaml.dump(data, f, sort_keys=False)
+    yaml.dump(data, f, Dumper=IndentedDumper, sort_keys=False, indent=2)
 EOF
 
-# 6. Apply Netplan Configuration
-echo "[+] Menerapkan perubahan Netplan..."
-netplan apply
+# 6. Apply Netplan Configuration with validation check
+echo "[+] Memvalidasi dan menerapkan perubahan Netplan..."
+if netplan try --timeout 10; then
+    echo ""
+    echo "=== Netplan Berhasil Dikonfigurasi dan Diterapkan! ==="
+else
+    echo "[!] Terdeteksi masalah pada konfigurasi, Netplan dikembalikan ke kondisi semula (reverted)."
+    exit 1
+fi
 
-echo ""
-echo "=== Netplan Berhasil Dikonfigurasi! ==="
 echo "Interface Target : $INTERFACE"
 echo "Berkas YAML      : $NETPLAN_FILE"
 echo "Status Interface :"

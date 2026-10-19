@@ -1,0 +1,115 @@
+# /etc/netplan/01-network-manager-all.yaml
+network:
+  version: 2
+  renderer: networkd # or NetworkManager
+
+  # Physical Ethernet Interfaces
+  ethernets:
+    eth0:
+      dhcp4: true
+      dhcp6: false
+      dhcp4-overrides:
+        use-dns: false
+        use-ntp: false
+        use-routes: true
+        metric: 100
+      addresses:
+        - 192.168.1.100/24
+        - "2001:db8::100/64"
+      gateway4: 192.168.1.1 # Note: Deprecated in newer versions, use 'routes' instead
+      gateway6: "2001:db8::1" # Note: Deprecated in newer versions, use 'routes' instead
+      nameservers:
+        search:
+          - mydomain.local
+        addresses:
+          - 8.8.8.8
+          - 1.1.1.1
+          - "2001:4860:4860::8888"
+      routes:
+        - to: default
+          via: 192.168.1.1
+          metric: 100
+          on-link: true
+        - to: 10.0.0.0/8
+          via: 192.168.1.254
+      routing-policy:
+        - from: 192.168.1.100
+          table: 101
+          priority: 10
+      macaddress: "00:11:22:33:44:55"
+      mtu: 1500
+      optional: true
+      wakeonlan: true
+      link-local: [ ipv4, ipv6 ]
+      critical: false
+      set-name: eth0-custom
+
+  # Wi-Fi Interfaces
+  wifis:
+    wlan0:
+      dhcp4: true
+      access-points:
+        "MyHomeWiFi":
+          password: "SecretPassword123"
+          mode: infrastructure # infrastructure or adhoc
+        "HiddenSSID":
+          hidden: true
+          password: "AnotherPassword"
+
+  # Network Bonds (Link Aggregation)
+  bonds:
+    bond0:
+      interfaces:
+        - eth0
+      dhcp4: true
+      parameters:
+        mode: active-backup # balance-rr, active-backup, balance-xor, broadcast, 802.3ad, balance-tlb, balance-alb
+        lacp-rate: fast # slow or fast
+        mii-monitor-interval: 100
+        transmit-hash-policy: layer2+3 # layer2, layer3+4, layer2+3, encap2+3, encap3+4
+
+  # Network Bridges
+  bridges:
+    br0:
+      interfaces:
+        - eth0
+      dhcp4: false
+      addresses:
+        - 172.16.0.1/24
+      parameters:
+        stp: true
+        forward-delay: 15
+        hello-time: 2
+        max-age: 20
+        path-cost:
+          eth0: 50
+
+  # VLANs (Virtual Local Area Networks)
+  vlans:
+    vlan10:
+      id: 10
+      link: eth0
+      dhcp4: true
+
+  # Virtual Tunnels
+  tunnels:
+    gre0:
+      mode: gre # gre, ipip, sit, vti, ip6gre, ip6ip6, ip6sit, vti6, wireguard
+      local: 192.168.1.100
+      remote: 203.0.113.5
+      addresses:
+        - 10.99.0.1/30
+
+    # WireGuard Configuration
+    wg0:
+      mode: wireguard
+      addresses:
+        - 10.0.0.2/24
+      port: 51820
+      private-key: "/etc/wireguard/private.key"
+      peers:
+        - public-key: "abc123xyz456..."
+          endpoint: "203.0.113.50:51820"
+          allowed-ips:
+            - 10.0.0.0/24
+          keepalive: 25
